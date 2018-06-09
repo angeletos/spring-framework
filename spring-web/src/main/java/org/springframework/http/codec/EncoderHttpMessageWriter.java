@@ -1,5 +1,5 @@
 /*
- * Copyright 2002-2017 the original author or authors.
+ * Copyright 2002-2018 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -28,6 +28,8 @@ import reactor.core.publisher.Mono;
 import org.springframework.core.ResolvableType;
 import org.springframework.core.codec.Encoder;
 import org.springframework.core.io.buffer.DataBuffer;
+import org.springframework.core.io.buffer.DataBufferFactory;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.http.ReactiveHttpOutputMessage;
 import org.springframework.http.server.reactive.ServerHttpRequest;
@@ -36,7 +38,7 @@ import org.springframework.lang.Nullable;
 import org.springframework.util.Assert;
 
 /**
- * {@code HttpMessageWriter} that wraps and delegates to a {@link Encoder}.
+ * {@code HttpMessageWriter} that wraps and delegates to an {@link Encoder}.
  *
  * <p>Also a {@code HttpMessageWriter} that pre-resolves encoding hints
  * from the extra information available on the server side such as the request
@@ -91,6 +93,7 @@ public class EncoderHttpMessageWriter<T> implements HttpMessageWriter<T> {
 		return this.encoder.canEncode(elementType, mediaType);
 	}
 
+	@SuppressWarnings("unchecked")
 	@Override
 	public Mono<Void> write(Publisher<? extends T> inputStream, ResolvableType elementType,
 			@Nullable MediaType mediaType, ReactiveHttpOutputMessage message, Map<String, Object> hints) {
@@ -99,6 +102,14 @@ public class EncoderHttpMessageWriter<T> implements HttpMessageWriter<T> {
 
 		Flux<DataBuffer> body = this.encoder.encode(
 				inputStream, message.bufferFactory(), elementType, contentType, hints);
+
+		// Response is not committed until the first signal...
+		if (inputStream instanceof Mono) {
+			HttpHeaders headers = message.getHeaders();
+			if (headers.getContentLength() < 0 && !headers.containsKey(HttpHeaders.TRANSFER_ENCODING)) {
+				body = body.doOnNext(data -> headers.setContentLength(data.readableByteCount()));
+			}
+		}
 
 		return (isStreamingMediaType(contentType) ?
 				message.writeAndFlushWith(body.map(Flux::just)) : message.writeWith(body));

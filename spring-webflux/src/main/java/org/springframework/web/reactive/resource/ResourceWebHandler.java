@@ -1,5 +1,5 @@
 /*
- * Copyright 2002-2017 the original author or authors.
+ * Copyright 2002-2018 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -28,7 +28,6 @@ import java.util.Set;
 
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
-import reactor.core.Exceptions;
 import reactor.core.publisher.Mono;
 
 import org.springframework.beans.factory.InitializingBean;
@@ -84,19 +83,24 @@ import org.springframework.web.server.WebHandler;
  */
 public class ResourceWebHandler implements WebHandler, InitializingBean {
 
-	/** Set of supported HTTP methods */
 	private static final Set<HttpMethod> SUPPORTED_METHODS = EnumSet.of(HttpMethod.GET, HttpMethod.HEAD);
 
-	private static final ResponseStatusException NOT_FOUND_EXCEPTION =
-			new ResponseStatusException(HttpStatus.NOT_FOUND);
+	private static final Exception NOT_FOUND_EXCEPTION = new ResponseStatusException(HttpStatus.NOT_FOUND);
 
 	private static final Log logger = LogFactory.getLog(ResourceWebHandler.class);
+
 
 	private final List<Resource> locations = new ArrayList<>(4);
 
 	private final List<ResourceResolver> resourceResolvers = new ArrayList<>(4);
 
 	private final List<ResourceTransformer> resourceTransformers = new ArrayList<>(4);
+
+	@Nullable
+	private ResourceResolverChain resolverChain;
+
+	@Nullable
+	private ResourceTransformerChain transformerChain;
 
 	@Nullable
 	private CacheControl cacheControl;
@@ -200,10 +204,16 @@ public class ResourceWebHandler implements WebHandler, InitializingBean {
 		if (this.resourceResolvers.isEmpty()) {
 			this.resourceResolvers.add(new PathResourceResolver());
 		}
+
 		initAllowedLocations();
+
 		if (getResourceHttpMessageWriter() == null) {
 			this.resourceHttpMessageWriter = new ResourceHttpMessageWriter();
 		}
+
+		// Initialize immutable resolver and transformer chains
+		this.resolverChain = new DefaultResourceResolverChain(this.resourceResolvers);
+		this.transformerChain = new DefaultResourceTransformerChain(this.resolverChain, this.resourceTransformers);
 	}
 
 	/**
@@ -223,7 +233,7 @@ public class ResourceWebHandler implements WebHandler, InitializingBean {
 			if (getResourceResolvers().get(i) instanceof PathResourceResolver) {
 				PathResourceResolver resolver = (PathResourceResolver) getResourceResolvers().get(i);
 				if (ObjectUtils.isEmpty(resolver.getAllowedLocations())) {
-					resolver.setAllowedLocations(getLocations().toArray(new Resource[getLocations().size()]));
+					resolver.setAllowedLocations(getLocations().toArray(new Resource[0]));
 				}
 				break;
 			}
@@ -314,9 +324,9 @@ public class ResourceWebHandler implements WebHandler, InitializingBean {
 	}
 
 	protected Mono<Resource> getResource(ServerWebExchange exchange) {
-
 		String name = HandlerMapping.PATH_WITHIN_HANDLER_MAPPING_ATTRIBUTE;
 		PathContainer pathWithinHandler = exchange.getRequiredAttribute(name);
+
 		String path = processPath(pathWithinHandler.value());
 		if (!StringUtils.hasText(path) || isInvalidPath(path)) {
 			if (logger.isTraceEnabled()) {
@@ -324,40 +334,62 @@ public class ResourceWebHandler implements WebHandler, InitializingBean {
 			}
 			return Mono.empty();
 		}
-
-		if (path.contains("%")) {
-			try {
-				// Use URLDecoder (vs UriUtils) to preserve potentially decoded UTF-8 chars
-				if (isInvalidPath(URLDecoder.decode(path, "UTF-8"))) {
-					if (logger.isTraceEnabled()) {
-						logger.trace("Ignoring invalid resource path with escape sequences [" + path + "].");
-					}
-					return Mono.empty();
-				}
+		if (isInvalidEncodedPath(path)) {
+			if (logger.isTraceEnabled()) {
+				logger.trace("Ignoring invalid resource path with escape sequences [" + path + "]");
 			}
-			catch (IllegalArgumentException ex) {
-				// ignore
-			}
-			catch (UnsupportedEncodingException ex) {
-				return Mono.error(Exceptions.propagate(ex));
-			}
+			return Mono.empty();
 		}
 
-		ResourceResolverChain resolveChain = createResolverChain();
-		return resolveChain.resolveResource(exchange, path, getLocations())
-				.flatMap(resource -> {
-					ResourceTransformerChain transformerChain = createTransformerChain(resolveChain);
-					return transformerChain.transform(exchange, resource);
-				});
+		Assert.notNull(this.resolverChain, "ResourceResolverChain not initialized.");
+		Assert.notNull(this.transformerChain, "ResourceTransformerChain not initialized.");
+
+		return this.resolverChain.resolveResource(exchange, path, getLocations())
+				.flatMap(resource -> this.transformerChain.transform(exchange, resource));
 	}
 
 	/**
-	 * Process the given resource path to be used.
-	 * <p>The default implementation replaces any combination of leading '/' and
-	 * control characters (00-1F and 7F) with a single "/" or "". For example
-	 * {@code "  // /// ////  foo/bar"} becomes {@code "/foo/bar"}.
+	 * Process the given resource path.
+	 * <p>The default implementation replaces:
+	 * <ul>
+	 * <li>Backslash with forward slash.
+	 * <li>Duplicate occurrences of slash with a single slash.
+	 * <li>Any combination of leading slash and control characters (00-1F and 7F)
+	 * with a single "/" or "". For example {@code "  / // foo/bar"}
+	 * becomes {@code "/foo/bar"}.
+	 * </ul>
+	 * @since 3.2.12
 	 */
 	protected String processPath(String path) {
+		path = StringUtils.replace(path, "\\", "/");
+		path = cleanDuplicateSlashes(path);
+		return cleanLeadingSlash(path);
+	}
+
+	private String cleanDuplicateSlashes(String path) {
+		StringBuilder sb = null;
+		char prev = 0;
+		for (int i = 0; i < path.length(); i++) {
+			char curr = path.charAt(i);
+			try {
+				if ((curr == '/') && (prev == '/')) {
+					if (sb == null) {
+						sb = new StringBuilder(path.substring(0, i));
+					}
+					continue;
+				}
+				if (sb != null) {
+					sb.append(path.charAt(i));
+				}
+			}
+			finally {
+				prev = curr;
+			}
+		}
+		return sb != null ? sb.toString() : path;
+	}
+
+	private String cleanLeadingSlash(String path) {
 		boolean slash = false;
 		for (int i = 0; i < path.length(); i++) {
 			if (path.charAt(i) == '/') {
@@ -375,6 +407,31 @@ public class ResourceWebHandler implements WebHandler, InitializingBean {
 			}
 		}
 		return (slash ? "/" : "");
+	}
+
+	/**
+	 * Check whether the given path contains invalid escape sequences.
+	 * @param path the path to validate
+	 * @return {@code true} if the path is invalid, {@code false} otherwise
+	 */
+	private boolean isInvalidEncodedPath(String path) {
+		if (path.contains("%")) {
+			try {
+				// Use URLDecoder (vs UriUtils) to preserve potentially decoded UTF-8 chars
+				String decodedPath = URLDecoder.decode(path, "UTF-8");
+				if (isInvalidPath(decodedPath)) {
+					return true;
+				}
+				decodedPath = processPath(decodedPath);
+				if (isInvalidPath(decodedPath)) {
+					return true;
+				}
+			}
+			catch (IllegalArgumentException | UnsupportedEncodingException ex) {
+				// Should never happen...
+			}
+		}
+		return false;
 	}
 
 	/**
@@ -421,14 +478,6 @@ public class ResourceWebHandler implements WebHandler, InitializingBean {
 			}
 		}
 		return false;
-	}
-
-	private ResourceResolverChain createResolverChain() {
-		return new DefaultResourceResolverChain(getResourceResolvers());
-	}
-
-	private ResourceTransformerChain createTransformerChain(ResourceResolverChain resolverChain) {
-		return new DefaultResourceTransformerChain(resolverChain, getResourceTransformers());
 	}
 
 	/**

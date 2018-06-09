@@ -62,6 +62,7 @@ public class CssLinkResourceTransformer extends ResourceTransformerSupport {
 	}
 
 
+	@SuppressWarnings("deprecation")
 	@Override
 	public Resource transform(HttpServletRequest request, Resource resource, ResourceTransformerChain transformerChain)
 			throws IOException {
@@ -70,6 +71,7 @@ public class CssLinkResourceTransformer extends ResourceTransformerSupport {
 
 		String filename = resource.getFilename();
 		if (!"css".equals(StringUtils.getFilenameExtension(filename)) ||
+				resource instanceof EncodedResourceResolver.EncodedResource ||
 				resource instanceof GzipResourceResolver.GzippedResource) {
 			return resource;
 		}
@@ -120,7 +122,7 @@ public class CssLinkResourceTransformer extends ResourceTransformerSupport {
 	}
 
 	private boolean hasScheme(String link) {
-		int schemeIndex = link.indexOf(":");
+		int schemeIndex = link.indexOf(':');
 		return (schemeIndex > 0 && !link.substring(0, schemeIndex).contains("/")) || link.indexOf("//") == 0;
 	}
 
@@ -136,7 +138,7 @@ public class CssLinkResourceTransformer extends ResourceTransformerSupport {
 	}
 
 
-	protected static abstract class AbstractLinkParser implements LinkParser {
+	protected abstract static class AbstractLinkParser implements LinkParser {
 
 		/** Return the keyword to use to search for links, e.g. "@import", "url(" */
 		protected abstract String getKeyword();

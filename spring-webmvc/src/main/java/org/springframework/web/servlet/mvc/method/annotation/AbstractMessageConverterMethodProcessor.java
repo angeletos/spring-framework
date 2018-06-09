@@ -1,5 +1,5 @@
 /*
- * Copyright 2002-2017 the original author or authors.
+ * Copyright 2002-2018 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -31,6 +31,7 @@ import javax.servlet.http.HttpServletResponse;
 import org.springframework.core.MethodParameter;
 import org.springframework.core.ParameterizedTypeReference;
 import org.springframework.core.ResolvableType;
+import org.springframework.core.io.InputStreamResource;
 import org.springframework.core.io.Resource;
 import org.springframework.core.io.support.ResourceRegion;
 import org.springframework.http.HttpEntity;
@@ -190,7 +191,7 @@ public abstract class AbstractMessageConverterMethodProcessor extends AbstractMe
 			valueType = getReturnValueType(outputValue, returnType);
 			declaredType = getGenericType(returnType);
 		}
-		
+
 		if (isResourceType(value, returnType)) {
 			outputMessage.getHeaders().set(HttpHeaders.ACCEPT_RANGES, "bytes");
 			if (value != null && inputMessage.getHeaders().getFirst(HttpHeaders.RANGE) != null) {
@@ -262,7 +263,7 @@ public abstract class AbstractMessageConverterMethodProcessor extends AbstractMe
 				if (genericConverter != null ?
 						((GenericHttpMessageConverter) converter).canWrite(declaredType, valueType, selectedMediaType) :
 						converter.canWrite(valueType, selectedMediaType)) {
-					outputValue = (T) getAdvice().beforeBodyWrite(outputValue, returnType, selectedMediaType,
+					outputValue = getAdvice().beforeBodyWrite(outputValue, returnType, selectedMediaType,
 							(Class<? extends HttpMessageConverter<?>>) converter.getClass(),
 							inputMessage, outputMessage);
 					if (outputValue != null) {
@@ -302,7 +303,8 @@ public abstract class AbstractMessageConverterMethodProcessor extends AbstractMe
 	 * Return whether the returned value or the declared return type extend {@link Resource}
 	 */
 	protected boolean isResourceType(@Nullable Object value, MethodParameter returnType) {
-		return Resource.class.isAssignableFrom(value != null ? value.getClass() : returnType.getParameterType());
+		Class<?> clazz = getReturnValueType(value, returnType);
+		return clazz != InputStreamResource.class && Resource.class.isAssignableFrom(clazz);
 	}
 
 	/**
@@ -321,7 +323,7 @@ public abstract class AbstractMessageConverterMethodProcessor extends AbstractMe
 	/**
 	 * @see #getProducibleMediaTypes(HttpServletRequest, Class, Type)
 	 */
-	@SuppressWarnings({"unchecked", "unused"})
+	@SuppressWarnings("unused")
 	protected List<MediaType> getProducibleMediaTypes(HttpServletRequest request, Class<?> valueClass) {
 		return getProducibleMediaTypes(request, valueClass, null);
 	}
@@ -365,8 +367,7 @@ public abstract class AbstractMessageConverterMethodProcessor extends AbstractMe
 	private List<MediaType> getAcceptableMediaTypes(HttpServletRequest request)
 			throws HttpMediaTypeNotAcceptableException {
 
-		List<MediaType> types = this.contentNegotiationManager.resolveMediaTypes(new ServletWebRequest(request));
-		return (types.isEmpty() ? Collections.singletonList(MediaType.ALL) : types);
+		return this.contentNegotiationManager.resolveMediaTypes(new ServletWebRequest(request));
 	}
 
 	/**

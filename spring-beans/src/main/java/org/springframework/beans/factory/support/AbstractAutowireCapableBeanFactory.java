@@ -1,5 +1,5 @@
 /*
- * Copyright 2002-2017 the original author or authors.
+ * Copyright 2002-2018 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -29,7 +29,6 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.HashSet;
-import java.util.Iterator;
 import java.util.LinkedHashSet;
 import java.util.LinkedList;
 import java.util.List;
@@ -39,6 +38,8 @@ import java.util.TreeSet;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.function.Supplier;
+
+import org.apache.commons.logging.Log;
 
 import org.springframework.beans.BeanUtils;
 import org.springframework.beans.BeanWrapper;
@@ -505,12 +506,9 @@ public abstract class AbstractAutowireCapableBeanFactory extends AbstractBeanFac
 			}
 			return beanInstance;
 		}
-		catch (BeanCreationException ex) {
-			// A previously detected exception with proper bean creation context already...
-			throw ex;
-		}
-		catch (ImplicitlyAppearedSingletonException ex) {
-			// An IllegalStateException to be communicated up to DefaultSingletonBeanRegistry...
+		catch (BeanCreationException | ImplicitlyAppearedSingletonException ex) {
+			// A previously detected exception with proper bean creation context already,
+			// or illegal singleton state to be communicated up to DefaultSingletonBeanRegistry.
 			throw ex;
 		}
 		catch (Throwable ex) {
@@ -756,7 +754,8 @@ public abstract class AbstractAutowireCapableBeanFactory extends AbstractBeanFac
 						}
 						Class<?> returnType = AutowireUtils.resolveReturnTypeForFactoryMethod(
 								factoryMethod, args, getBeanClassLoader());
-						uniqueCandidate = (commonType == null ? factoryMethod : null);
+						uniqueCandidate = (commonType == null && returnType == factoryMethod.getReturnType() ?
+								factoryMethod : null);
 						commonType = ClassUtils.determineCommonAncestor(returnType, commonType);
 						if (commonType == null) {
 							// Ambiguous return types found: return null to indicate "not determinable".
@@ -780,12 +779,15 @@ public abstract class AbstractAutowireCapableBeanFactory extends AbstractBeanFac
 			}
 		}
 
-		if (commonType != null) {
-			// Clear return type found: all factory methods return same type.
-			mbd.factoryMethodReturnType = (uniqueCandidate != null ?
-					ResolvableType.forMethodReturnType(uniqueCandidate) : ResolvableType.forClass(commonType));
+		if (commonType == null) {
+			return null;
 		}
-		return commonType;
+		// Common return type found: all factory methods return same type. For a non-parameterized
+		// unique candidate, cache the full type declaration context of the target factory method.
+		cachedReturnType = (uniqueCandidate != null ?
+				ResolvableType.forMethodReturnType(uniqueCandidate) : ResolvableType.forClass(commonType));
+		mbd.factoryMethodReturnType = cachedReturnType;
+		return cachedReturnType.resolve();
 	}
 
 	/**
@@ -931,12 +933,16 @@ public abstract class AbstractAutowireCapableBeanFactory extends AbstractBeanFac
 			if (bw != null) {
 				return (FactoryBean<?>) bw.getWrappedInstance();
 			}
+			Object beanInstance = getSingleton(beanName, false);
+			if (beanInstance instanceof FactoryBean) {
+				return (FactoryBean<?>) beanInstance;
+			}
 			if (isSingletonCurrentlyInCreation(beanName) ||
 					(mbd.getFactoryBeanName() != null && isSingletonCurrentlyInCreation(mbd.getFactoryBeanName()))) {
 				return null;
 			}
 
-			Object instance = null;
+			Object instance;
 			try {
 				// Mark this bean as currently in creation, even if just partially.
 				beforeSingletonCreation(beanName);
@@ -1496,15 +1502,9 @@ public abstract class AbstractAutowireCapableBeanFactory extends AbstractBeanFac
 	 * @see #isExcludedFromDependencyCheck
 	 */
 	protected PropertyDescriptor[] filterPropertyDescriptorsForDependencyCheck(BeanWrapper bw) {
-		List<PropertyDescriptor> pds =
-				new LinkedList<>(Arrays.asList(bw.getPropertyDescriptors()));
-		for (Iterator<PropertyDescriptor> it = pds.iterator(); it.hasNext();) {
-			PropertyDescriptor pd = it.next();
-			if (isExcludedFromDependencyCheck(pd)) {
-				it.remove();
-			}
-		}
-		return pds.toArray(new PropertyDescriptor[pds.size()]);
+		List<PropertyDescriptor> pds = new LinkedList<>(Arrays.asList(bw.getPropertyDescriptors()));
+		pds.removeIf(this::isExcludedFromDependencyCheck);
+		return pds.toArray(new PropertyDescriptor[0]);
 	}
 
 	/**
@@ -1566,14 +1566,12 @@ public abstract class AbstractAutowireCapableBeanFactory extends AbstractBeanFac
 			return;
 		}
 
+		if (System.getSecurityManager() != null && bw instanceof BeanWrapperImpl) {
+			((BeanWrapperImpl) bw).setSecurityContext(getAccessControlContext());
+		}
+
 		MutablePropertyValues mpvs = null;
 		List<PropertyValue> original;
-
-		if (System.getSecurityManager() != null) {
-			if (bw instanceof BeanWrapperImpl) {
-				((BeanWrapperImpl) bw).setSecurityContext(getAccessControlContext());
-			}
-		}
 
 		if (pvs instanceof MutablePropertyValues) {
 			mpvs = (MutablePropertyValues) pvs;
@@ -1857,8 +1855,29 @@ public abstract class AbstractAutowireCapableBeanFactory extends AbstractBeanFac
 	 */
 	@Override
 	protected void removeSingleton(String beanName) {
-		super.removeSingleton(beanName);
-		this.factoryBeanInstanceCache.remove(beanName);
+		synchronized (getSingletonMutex()) {
+			super.removeSingleton(beanName);
+			this.factoryBeanInstanceCache.remove(beanName);
+		}
+	}
+
+	/**
+	 * Overridden to clear FactoryBean instance cache as well.
+	 */
+	@Override
+	protected void clearSingletonCache() {
+		synchronized (getSingletonMutex()) {
+			super.clearSingletonCache();
+			this.factoryBeanInstanceCache.clear();
+		}
+	}
+
+	/**
+	 * Expose the logger to collaborating delegates.
+	 * @since 5.0.7
+	 */
+	Log getLogger() {
+		return logger;
 	}
 
 

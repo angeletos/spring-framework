@@ -308,6 +308,9 @@ class MessageBrokerBeanDefinitionParser implements BeanDefinitionParser {
 			if (transportElem.hasAttribute("send-buffer-size")) {
 				handlerDef.getPropertyValues().add("sendBufferSizeLimit", transportElem.getAttribute("send-buffer-size"));
 			}
+			if (transportElem.hasAttribute("time-to-first-message")) {
+				handlerDef.getPropertyValues().add("timeToFirstMessage", transportElem.getAttribute("time-to-first-message"));
+			}
 			Element factoriesElement = DomUtils.getChildElementByTagName(transportElem, "decorator-factories");
 			if (factoriesElement != null) {
 				ManagedList<Object> factories = extractBeanSubElements(factoriesElement, context);
@@ -382,6 +385,10 @@ class MessageBrokerBeanDefinitionParser implements BeanDefinitionParser {
 			if (simpleBrokerElem.hasAttribute("heartbeat")) {
 				String heartbeatValue = simpleBrokerElem.getAttribute("heartbeat");
 				brokerDef.getPropertyValues().add("heartbeatValue", heartbeatValue);
+			}
+			if (simpleBrokerElem.hasAttribute("selector-header")) {
+				String headerName = simpleBrokerElem.getAttribute("selector-header");
+				brokerDef.getPropertyValues().add("selectorHeaderName", headerName);
 			}
 		}
 		else if (brokerRelayElem != null) {

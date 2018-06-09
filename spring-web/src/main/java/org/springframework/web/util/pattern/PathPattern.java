@@ -71,7 +71,7 @@ import org.springframework.util.StringUtils;
  */
 public class PathPattern implements Comparable<PathPattern> {
 
-	private final static PathContainer EMPTY_PATH = PathContainer.parsePath("");
+	private static final PathContainer EMPTY_PATH = PathContainer.parsePath("");
 
 
 	/** The text of the parsed pattern */
@@ -310,7 +310,8 @@ public class PathPattern implements Comparable<PathPattern> {
 				}
 			}
 			resultPath = PathContainer.parsePath(buf.toString());
-		} else if (startIndex >= endIndex) {
+		}
+		else if (startIndex >= endIndex) {
 			resultPath = PathContainer.parsePath("");
 		}
 		else {

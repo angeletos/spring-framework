@@ -1,5 +1,5 @@
 /*
- * Copyright 2002-2017 the original author or authors.
+ * Copyright 2002-2018 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -31,7 +31,6 @@ import okhttp3.mockwebserver.RecordedRequest;
 import org.hamcrest.Matchers;
 import org.junit.After;
 import org.junit.Before;
-import org.junit.Ignore;
 import org.junit.Test;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
@@ -49,12 +48,10 @@ import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.codec.Pojo;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertThat;
-import static org.junit.Assert.assertTrue;
+import static org.junit.Assert.*;
 
 /**
- * Integration tests using a {@link ExchangeFunction} through {@link WebClient}.
+ * Integration tests using an {@link ExchangeFunction} through {@link WebClient}.
  *
  * @author Brian Clozel
  * @author Rossen Stoyanchev
@@ -109,8 +106,8 @@ public class WebClientIntegrationTests {
 		Mono<String> result = this.webClient.get()
 				.uri("/greeting?name=Spring")
 				.header("X-Test-Header", "testvalue")
-				.exchange()
-				.flatMap(response -> response.bodyToMono(String.class));
+				.retrieve()
+				.bodyToMono(String.class);
 
 		StepVerifier.create(result)
 				.expectNext("Hello Spring!")
@@ -146,20 +143,23 @@ public class WebClientIntegrationTests {
 		});
 	}
 
-	@Test
+	@Test // SPR-16715
 	public void shouldReceiveJsonAsTypeReferenceString() throws Exception {
-		String content = "{\"bar\":\"barbar\",\"foo\":\"foofoo\"}";
+		String content = "{\"containerValue\":{\"fooValue\":\"bar\"}}";
 		prepareResponse(response -> response
 				.setHeader("Content-Type", "application/json").setBody(content));
 
-		Mono<String> result = this.webClient.get()
+		Mono<ValueContainer<Foo>> result = this.webClient.get()
 				.uri("/json").accept(MediaType.APPLICATION_JSON)
 				.retrieve()
-				.bodyToMono(new ParameterizedTypeReference<String>() {
-				});
+				.bodyToMono(new ParameterizedTypeReference<ValueContainer<Foo>>() {});
 
 		StepVerifier.create(result)
-				.expectNext(content)
+				.assertNext(valueContainer -> {
+					Foo foo = valueContainer.getContainerValue();
+					assertNotNull(foo);
+					assertEquals("bar", foo.getFooValue());
+				})
 				.expectComplete().verify(Duration.ofSeconds(3));
 
 		expectRequestCount(1);
@@ -256,8 +256,8 @@ public class WebClientIntegrationTests {
 		Mono<Pojo> result = this.webClient.get()
 				.uri("/pojo")
 				.accept(MediaType.APPLICATION_JSON)
-				.exchange()
-				.flatMap(response -> response.bodyToMono(Pojo.class));
+				.retrieve()
+				.bodyToMono(Pojo.class);
 
 		StepVerifier.create(result)
 				.consumeNextWith(p -> assertEquals("barbar", p.getBar()))
@@ -280,8 +280,8 @@ public class WebClientIntegrationTests {
 		Flux<Pojo> result = this.webClient.get()
 				.uri("/pojos")
 				.accept(MediaType.APPLICATION_JSON)
-				.exchange()
-				.flatMapMany(response -> response.bodyToFlux(Pojo.class));
+				.retrieve()
+				.bodyToFlux(Pojo.class);
 
 		StepVerifier.create(result)
 				.consumeNextWith(p -> assertThat(p.getBar(), Matchers.is("bar1")))
@@ -306,8 +306,8 @@ public class WebClientIntegrationTests {
 				.accept(MediaType.APPLICATION_JSON)
 				.contentType(MediaType.APPLICATION_JSON)
 				.syncBody(new Pojo("foofoo", "barbar"))
-				.exchange()
-				.flatMap(response -> response.bodyToMono(Pojo.class));
+				.retrieve()
+				.bodyToMono(Pojo.class);
 
 		StepVerifier.create(result)
 				.consumeNextWith(p -> assertEquals("BARBAR", p.getBar()))
@@ -332,8 +332,8 @@ public class WebClientIntegrationTests {
 		Mono<String> result = this.webClient.get()
 				.uri("/test")
 				.cookie("testkey", "testvalue")
-				.exchange()
-				.flatMap(response -> response.bodyToMono(String.class));
+				.retrieve()
+				.bodyToMono(String.class);
 
 		StepVerifier.create(result)
 				.expectNext("test")
@@ -348,7 +348,6 @@ public class WebClientIntegrationTests {
 	}
 
 	@Test // SPR-16246
-	@Ignore
 	public void shouldSendLargeTextFile() throws Exception {
 		prepareResponse(response -> {});
 
@@ -650,6 +649,35 @@ public class WebClientIntegrationTests {
 
 		MyException(String message) {
 			super(message);
+		}
+	}
+
+
+	static class ValueContainer<T> {
+
+		private T containerValue;
+
+
+		public T getContainerValue() {
+			return containerValue;
+		}
+
+		public void setContainerValue(T containerValue) {
+			this.containerValue = containerValue;
+		}
+	}
+
+	static class Foo {
+
+		private String fooValue;
+
+
+		public String getFooValue() {
+			return fooValue;
+		}
+
+		public void setFooValue(String fooValue) {
+			this.fooValue = fooValue;
 		}
 	}
 

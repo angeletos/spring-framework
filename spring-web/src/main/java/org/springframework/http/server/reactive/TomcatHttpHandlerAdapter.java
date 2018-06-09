@@ -1,5 +1,5 @@
 /*
- * Copyright 2002-2017 the original author or authors.
+ * Copyright 2002-2018 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,11 +17,11 @@
 package org.springframework.http.server.reactive;
 
 import java.io.IOException;
+import java.net.URISyntaxException;
 import java.nio.ByteBuffer;
 import javax.servlet.AsyncContext;
 import javax.servlet.ServletRequest;
 import javax.servlet.ServletResponse;
-import javax.servlet.annotation.WebServlet;
 import javax.servlet.http.HttpServletRequest;
 import javax.servlet.http.HttpServletResponse;
 
@@ -39,8 +39,8 @@ import org.springframework.util.Assert;
  *
  * @author Violeta Georgieva
  * @since 5.0
+ * @see org.springframework.web.server.adapter.AbstractReactiveWebInitializer
  */
-@WebServlet(asyncSupported = true)
 public class TomcatHttpHandlerAdapter extends ServletHttpHandlerAdapter {
 
 
@@ -51,7 +51,7 @@ public class TomcatHttpHandlerAdapter extends ServletHttpHandlerAdapter {
 
 	@Override
 	protected ServerHttpRequest createRequest(HttpServletRequest request, AsyncContext asyncContext)
-			throws IOException {
+			throws IOException, URISyntaxException {
 
 		Assert.notNull(getServletPath(), "servletPath is not initialized.");
 		return new TomcatServerHttpRequest(request, asyncContext, getServletPath(),
@@ -69,7 +69,8 @@ public class TomcatHttpHandlerAdapter extends ServletHttpHandlerAdapter {
 	private final class TomcatServerHttpRequest extends ServletServerHttpRequest {
 
 		public TomcatServerHttpRequest(HttpServletRequest request, AsyncContext context,
-				String servletPath, DataBufferFactory factory, int bufferSize) throws IOException {
+				String servletPath, DataBufferFactory factory, int bufferSize)
+				throws IOException, URISyntaxException {
 
 			super(request, context, servletPath, factory, bufferSize);
 		}
@@ -92,6 +93,9 @@ public class TomcatHttpHandlerAdapter extends ServletHttpHandlerAdapter {
 					dataBuffer.writePosition(read);
 					release = false;
 					return dataBuffer;
+				}
+				else if (read == -1) {
+					return EOF_BUFFER;
 				}
 				else {
 					return null;

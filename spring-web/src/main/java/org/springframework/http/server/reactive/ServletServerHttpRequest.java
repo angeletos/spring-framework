@@ -1,5 +1,5 @@
 /*
- * Copyright 2002-2017 the original author or authors.
+ * Copyright 2002-2018 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -38,6 +38,7 @@ import reactor.core.publisher.Flux;
 
 import org.springframework.core.io.buffer.DataBuffer;
 import org.springframework.core.io.buffer.DataBufferFactory;
+import org.springframework.core.io.buffer.DefaultDataBufferFactory;
 import org.springframework.http.HttpCookie;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
@@ -56,6 +57,9 @@ import org.springframework.util.StringUtils;
  */
 class ServletServerHttpRequest extends AbstractServerHttpRequest {
 
+	static final DataBuffer EOF_BUFFER = new DefaultDataBufferFactory().allocateBuffer(0);
+
+
 	protected final Log logger = LogFactory.getLog(getClass());
 
 
@@ -71,7 +75,8 @@ class ServletServerHttpRequest extends AbstractServerHttpRequest {
 
 
 	public ServletServerHttpRequest(HttpServletRequest request, AsyncContext asyncContext,
-			String servletPath, DataBufferFactory bufferFactory, int bufferSize) throws IOException {
+			String servletPath, DataBufferFactory bufferFactory, int bufferSize)
+			throws IOException, URISyntaxException {
 
 		super(initUri(request), request.getContextPath() + servletPath, initHeaders(request));
 
@@ -90,19 +95,14 @@ class ServletServerHttpRequest extends AbstractServerHttpRequest {
 		this.bodyPublisher.registerReadListener();
 	}
 
-	private static URI initUri(HttpServletRequest request) {
+	private static URI initUri(HttpServletRequest request) throws URISyntaxException {
 		Assert.notNull(request, "'request' must not be null");
-		try {
-			StringBuffer url = request.getRequestURL();
-			String query = request.getQueryString();
-			if (StringUtils.hasText(query)) {
-				url.append('?').append(query);
-			}
-			return new URI(url.toString());
+		StringBuffer url = request.getRequestURL();
+		String query = request.getQueryString();
+		if (StringUtils.hasText(query)) {
+			url.append('?').append(query);
 		}
-		catch (URISyntaxException ex) {
-			throw new IllegalStateException("Could not get URI: " + ex.getMessage(), ex);
-		}
+		return new URI(url.toString());
 	}
 
 	private static HttpHeaders initHeaders(HttpServletRequest request) {
@@ -174,12 +174,19 @@ class ServletServerHttpRequest extends AbstractServerHttpRequest {
 
 	@Nullable
 	protected SslInfo initSslInfo() {
-		if (!this.request.isSecure()) {
-			return null;
-		}
-		return new DefaultSslInfo(
-				(String) request.getAttribute("javax.servlet.request.ssl_session_id"),
-				(X509Certificate[]) request.getAttribute("java.security.cert.X509Certificate"));
+		X509Certificate[] certificates = getX509Certificates();
+		return certificates != null ? new DefaultSslInfo(getSslSessionId(), certificates) : null;
+	}
+
+	@Nullable
+	private String getSslSessionId() {
+		return (String) this.request.getAttribute("javax.servlet.request.ssl_session_id");
+	}
+
+	@Nullable
+	private X509Certificate[] getX509Certificates() {
+		String name = "javax.servlet.request.X509Certificate";
+		return (X509Certificate[]) this.request.getAttribute(name);
 	}
 
 	@Override
@@ -190,9 +197,11 @@ class ServletServerHttpRequest extends AbstractServerHttpRequest {
 	/**
 	 * Read from the request body InputStream and return a DataBuffer.
 	 * Invoked only when {@link ServletInputStream#isReady()} returns "true".
+	 * @return a DataBuffer with data read, or {@link #EOF_BUFFER} if the input
+	 * stream returned -1, or null if 0 bytes were read.
 	 */
 	@Nullable
-	protected DataBuffer readFromInputStream() throws IOException {
+	DataBuffer readFromInputStream() throws IOException {
 		int read = this.request.getInputStream().read(this.buffer);
 		if (logger.isTraceEnabled()) {
 			logger.trace("InputStream read returned " + read + (read != -1 ? " bytes" : ""));
@@ -202,6 +211,10 @@ class ServletServerHttpRequest extends AbstractServerHttpRequest {
 			DataBuffer dataBuffer = this.bufferFactory.allocateBuffer(read);
 			dataBuffer.write(this.buffer, 0, read);
 			return dataBuffer;
+		}
+
+		if (read == -1) {
+			return EOF_BUFFER;
 		}
 
 		return null;
@@ -252,7 +265,7 @@ class ServletServerHttpRequest extends AbstractServerHttpRequest {
 
 		@Override
 		protected void checkOnDataAvailable() {
-			if (!this.inputStream.isFinished() && this.inputStream.isReady()) {
+			if (this.inputStream.isReady() && !this.inputStream.isFinished()) {
 				onDataAvailable();
 			}
 		}
@@ -261,7 +274,13 @@ class ServletServerHttpRequest extends AbstractServerHttpRequest {
 		@Nullable
 		protected DataBuffer read() throws IOException {
 			if (this.inputStream.isReady()) {
-				return readFromInputStream();
+				DataBuffer dataBuffer = readFromInputStream();
+				if (dataBuffer == EOF_BUFFER) {
+					// No need to wait for container callback...
+					onAllDataRead();
+					dataBuffer = null;
+				}
+				return dataBuffer;
 			}
 			return null;
 		}
